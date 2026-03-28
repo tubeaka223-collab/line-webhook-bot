@@ -1,27 +1,16 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
+const { Configuration, OpenAIApi } = require("openai");
 
 const app = express();
 app.use(bodyParser.json());
-
-// あとでRenderに設定する
-const LINE_ACCESS_TOKEN = process.env.LINE_ACCESS_TOKEN;
-
-app.post("/webhook", async (req, res) => {
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");           // LINE返信用
-const { Configuration, OpenAIApi } = require("openai");  // ここ追加
 
 // OpenAI初期化
 const configuration = new Configuration({
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey: process.env.OPENAI_API_KEY, // 環境変数にOpenAI APIキーを設定
 });
 const openai = new OpenAIApi(configuration);
-
-const app = express();
-app.use(bodyParser.json());
 
 app.post("/webhook", async (req, res) => {
     const events = req.body.events;
@@ -32,20 +21,42 @@ app.post("/webhook", async (req, res) => {
             const replyToken = event.replyToken;
             const userMessage = event.message.text;
 
-            // ここでAIに送信して返信を作る
-            // const aiResponse = await openai.createChatCompletion({...});
-            // const replyMessage = aiResponse.data.choices[0].message.content;
+            try {
+                // AIに解析して返信を作る
+                const aiResponse = await openai.createChatCompletion({
+                    model: "gpt-3.5-turbo",
+                    messages: [
+                        { role: "system", content: "あなたはFXのアドバイザーです。簡単で分かりやすく回答してください。" },
+                        { role: "user", content: userMessage }
+                    ],
+                    max_tokens: 100
+                });
 
-            const replyMessage = `受け取った：${userMessage} 自動返信文です`; // とりあえずテスト
+                const replyMessage = aiResponse.data.choices[0].message.content;
 
-            await axios.post(
-                "https://api.line.me/v2/bot/message/reply",
-                {
-                    replyToken: replyToken,
-                    messages: [{ type: "text", text: replyMessage }],
-                },
-                { headers: { Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}` } }
-            );
+                // LINEに返信
+                await axios.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    {
+                        replyToken: replyToken,
+                        messages: [{ type: "text", text: replyMessage }],
+                    },
+                    { headers: { Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}` } }
+                );
+
+            } catch (error) {
+                console.error("AI返信エラー:", error);
+
+                // エラー時は簡易返信
+                await axios.post(
+                    "https://api.line.me/v2/bot/message/reply",
+                    {
+                        replyToken: replyToken,
+                        messages: [{ type: "text", text: "すみません、現在対応できません。" }],
+                    },
+                    { headers: { Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}` } }
+                );
+            }
         }
     }
 
