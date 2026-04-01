@@ -14,14 +14,15 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 為替取得
+// 🔥 安定して取れるAPIに変更（超重要）
 async function getUSDJPY() {
   try {
     const res = await axios.get(
-      "https://api.exchangerate.host/latest?base=USD&symbols=JPY"
+      "https://api.exchangerate-api.com/v4/latest/USD"
     );
     return res.data.rates.JPY;
   } catch (e) {
+    console.error("価格取得エラー:", e.message);
     return null;
   }
 }
@@ -38,7 +39,25 @@ app.post("/webhook", async (req, res) => {
       try {
         const price = await getUSDJPY();
 
-        // ←ここが最重要
+        // 🔥 fallback追加（ここ大事）
+        if (!price) {
+          await axios.post(
+            "https://api.line.me/v2/bot/message/reply",
+            {
+              replyToken: replyToken,
+              messages: [
+                { type: "text", text: "価格取得エラー（API失敗）" },
+              ],
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              },
+            }
+          );
+          continue;
+        }
+
         const fixedPrice = Number(price).toFixed(2);
 
         const aiResponse = await openai.chat.completions.create({
@@ -51,32 +70,30 @@ app.post("/webhook", async (req, res) => {
 
 現在のドル円価格は【${fixedPrice}円】です。
 この価格を必ず基準にして分析してください。
-絶対に別の価格（例：113円など）を使ってはいけません。
+絶対に別の価格を使ってはいけません。
 
-必ず以下の形式で答えてください：
+必ず以下の形式：
 
 【結論】
 ロング / ショート / 様子見
 
 【トレンド】
-レンジ or 上昇トレンド or 下降トレンド
+レンジ or 上昇 or 下降
 
-【エントリー目安】
-${fixedPrice}円を基準に±何pipsかで記載
+【エントリー】
+${fixedPrice}円基準 ±pips
 
-【利確目安】
-pipsで記載
+【利確】
+pips
 
 【損切り】
-pipsで記載
+pips
 
 【目線】
 短期・中期・長期
 
 【理由】
-シンプルに
-
-※投資判断はユーザーに委ねること
+簡潔に
               `,
             },
             {
@@ -104,18 +121,19 @@ pipsで記載
           }
         );
       } catch (error) {
+        console.error("全体エラー:", error.message);
+
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken: replyToken,
             messages: [
-              { type: "text", text: "エラーが発生しました" },
+              { type: "text", text: "エラー発生" },
             ],
           },
           {
             headers: {
               Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-              "Content-Type": "application/json",
             },
           }
         );
