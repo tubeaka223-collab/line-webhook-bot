@@ -48,7 +48,7 @@ app.post("/webhook", async (req, res) => {
 ・根拠（簡単に）
 
 ※投資助言になりすぎないよう「参考レベル」として表現する
-※最大800文字以内
+※最大1000文字以内
               `,
             },
             {
@@ -56,7 +56,7 @@ app.post("/webhook", async (req, res) => {
               content: userMessage,
             },
           ],
-          max_tokens: 400, // ←ここ重要（増やした）
+          max_tokens: 1000, // ←ここ重要（増やした）
         });
 
         const replyMessage =
