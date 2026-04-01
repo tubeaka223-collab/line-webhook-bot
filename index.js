@@ -1,16 +1,52 @@
+const express = require("express");
+const bodyParser = require("body-parser");
+const axios = require("axios");
+const OpenAI = require("openai");
+
+const app = express();
+app.use(bodyParser.json());
+
+// 動作確認
+app.get("/", (req, res) => {
+  res.send("OK");
+});
+
+// OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Webhook
+app.post("/webhook", async (req, res) => {
+  console.log("Webhookきた");
+
+  const events = req.body.events;
+  if (!events) return res.sendStatus(200);
+
+  for (let event of events) {
+    if (event.type === "message" && event.message.type === "text") {
+      const replyToken = event.replyToken;
+      const userMessage = event.message.text;
+
+      const fixedPrice = 158.30; // 仮の価格（後でAPI化できる）
+
+      try {
+        const aiResponse = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `
 あなたはプロのFXトレーダーです。
 
 現在のドル円価格は【${fixedPrice}円】です。
 
 重要：
 ・必ず「ロング」か「ショート」を選ぶ（様子見は禁止）
-・理由は後付けでいいので必ずポジションを取る
-・現在の価格から現実的な範囲で数値を出す
-
-フォーマット：
+・必ずすべての項目を埋める
 
 【結論】
-ロング or ショート（必ずどちらか）
+ロング or ショート
 
 【トレンド】
 上昇 / 下降 / レンジ
@@ -21,8 +57,8 @@
 ・現在の動き：
 
 【戦略】
-・どこで入るか（現在価格ベース）
-・逆行したらどこで損切りか
+・どこで入るか
+・どこで損切りか
 
 【エントリー】
 価格
@@ -50,4 +86,55 @@ FRB：
 テクニカル＋市場心理
 
 ※様子見は禁止
-※必ずポジションを取る
+※未記入は禁止
+`,
+            },
+            {
+              role: "user",
+              content: userMessage,
+            },
+          ],
+          max_tokens: 800,
+        });
+
+        const replyMessage =
+          aiResponse.choices[0].message.content || "エラー";
+
+        await axios.post(
+          "https://api.line.me/v2/bot/message/reply",
+          {
+            replyToken: replyToken,
+            messages: [{ type: "text", text: replyMessage }],
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } catch (error) {
+        console.error(error);
+
+        await axios.post(
+          "https://api.line.me/v2/bot/message/reply",
+          {
+            replyToken: replyToken,
+            messages: [{ type: "text", text: "エラー発生" }],
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      }
+    }
+  }
+
+  res.sendStatus(200);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("サーバー稼働中"));
