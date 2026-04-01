@@ -6,28 +6,52 @@ const OpenAI = require("openai");
 const app = express();
 app.use(bodyParser.json());
 
-// 動作確認
+// ===== 動作確認 =====
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// OpenAI
+// ===== OpenAI =====
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 為替取得（無料・キー不要・安定）
-async function getUSDJPY() {
+// ===== 5分足データ取得（Alpha Vantage）=====
+async function getFXData() {
   try {
-    const res = await axios.get("https://open.er-api.com/v6/latest/USD");
-    return res.data.rates.JPY;
+    const res = await axios.get(
+      "https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=demo"
+    );
+
+    const data = res.data["Time Series FX (5min)"];
+    if (!data) return null;
+
+    const times = Object.keys(data).slice(0, 20); // 直近20本
+
+    let prices = times.map((t) => parseFloat(data[t]["4. close"]));
+
+    const current = prices[0];
+    const high = Math.max(...prices);
+    const low = Math.min(...prices);
+
+    // ===== トレンド判定 =====
+    let trend = "レンジ";
+    if (current > prices[5]) trend = "上昇";
+    if (current < prices[5]) trend = "下降";
+
+    return {
+      current,
+      high,
+      low,
+      trend,
+    };
   } catch (e) {
     console.error("為替取得失敗:", e.message);
     return null;
   }
 }
 
-// Webhook
+// ===== Webhook =====
 app.post("/webhook", async (req, res) => {
   console.log("Webhookきた");
 
@@ -39,9 +63,9 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const userMessage = event.message.text;
 
-      const price = await getUSDJPY();
+      const fx = await getFXData();
 
-      if (!price) {
+      if (!fx) {
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
@@ -67,13 +91,18 @@ app.post("/webhook", async (req, res) => {
               content: `
 あなたはプロのFXトレーダーです。
 
-現在のドル円価格は【${price.toFixed(2)}円】です。
+【リアルデータ】
+現在価格：${fx.current.toFixed(2)}円
+直近高値：${fx.high.toFixed(2)}円
+直近安値：${fx.low.toFixed(2)}円
+トレンド：${fx.trend}
 
 【ルール】
 ・必ずロング or ショート（様子見禁止）
 ・±50pips以内で現実的に
-・当日の流れは「上げ→下げ」など実際っぽく書く
+・上昇→押し目ロング / 下降→戻り売りベース
 ・スワップは書かない
+・データに基づいて判断する（妄想禁止）
 
 【形式】
 【結論】
@@ -83,9 +112,7 @@ app.post("/webhook", async (req, res) => {
 上昇 / 下降 / レンジ
 
 【当日の流れ】
-・東京時間：
-・ロンドン時間：
-・現在の動き：
+・直近の値動きベースで簡潔に
 
 【戦略】
 ・どこで入るか：
