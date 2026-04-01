@@ -16,19 +16,37 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===== 5分足データ取得（Alpha Vantage）=====
+// ===== キャッシュ =====
+let cachedFX = null;
+let lastFetch = 0;
+
+// ===== 為替取得（5分足 + キャッシュ）=====
 async function getFXData() {
+  const now = Date.now();
+
+  // 30秒キャッシュ
+  if (cachedFX && now - lastFetch < 30000) {
+    return cachedFX;
+  }
+
   try {
     const res = await axios.get(
-      "https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=demo"
+      `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${process.env.ALPHA_API_KEY}`
     );
 
     const data = res.data["Time Series FX (5min)"];
-    if (!data) return null;
 
-    const times = Object.keys(data).slice(0, 20); // 直近20本
+    // API制限・エラー対策
+    if (!data) {
+      console.error("データなし:", res.data);
+      return null;
+    }
 
-    let prices = times.map((t) => parseFloat(data[t]["4. close"]));
+    const times = Object.keys(data).slice(0, 20);
+
+    const prices = times.map((t) =>
+      parseFloat(data[t]["4. close"])
+    );
 
     const current = prices[0];
     const high = Math.max(...prices);
@@ -39,12 +57,10 @@ async function getFXData() {
     if (current > prices[5]) trend = "上昇";
     if (current < prices[5]) trend = "下降";
 
-    return {
-      current,
-      high,
-      low,
-      trend,
-    };
+    cachedFX = { current, high, low, trend };
+    lastFetch = now;
+
+    return cachedFX;
   } catch (e) {
     console.error("為替取得失敗:", e.message);
     return null;
@@ -53,7 +69,6 @@ async function getFXData() {
 
 // ===== Webhook =====
 app.post("/webhook", async (req, res) => {
-  console.log("新コード動いてる");
   console.log("Webhookきた");
 
   const events = req.body.events;
@@ -100,11 +115,10 @@ app.post("/webhook", async (req, res) => {
 
 【ルール】
 ・必ずロング or ショート（様子見禁止）
-・±50pips以内
 ・トレンドに従う（上昇→ロング、下降→ショート）
-・データに無い情報は書かない（妄想禁止）
-・スワップ禁止
-・東京時間やロンドン時間など存在しない情報は禁止
+・±50pips以内で現実的に書く
+・存在しない情報を書かない（妄想禁止）
+・スワップ項目は禁止
 
 【形式】
 【結論】
@@ -114,29 +128,28 @@ app.post("/webhook", async (req, res) => {
 上昇 / 下降 / レンジ
 
 【現在の状況】
-現在価格・高値・安値をベースに説明
+（価格・高値・安値ベースで説明）
 
 【戦略】
-エントリーと損切りを具体的に
+エントリーと損切り
 
 【エントリー】
-価格
+価格：
 
 【利確】
-pipsと価格
+pipsと価格：
 
 【損切り】
-pipsと価格
+pipsと価格：
 
 【目線】
 短期
 
 【ファンダ】
-※一般論ではなく、簡潔に1行だけ
+1行で簡潔に
 
 【根拠】
-テクニカルベースで説明
-
+テクニカルベース
 `,
             },
             {
@@ -186,5 +199,6 @@ pipsと価格
   res.sendStatus(200);
 });
 
+// ===== 起動 =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("サーバー稼働中"));
