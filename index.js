@@ -16,14 +16,13 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 為替取得関数（無料API）
+// 為替取得（安定版）
 async function getUSDJPY() {
   try {
-    const res = await axios.get("https://api.exchangerate.host/latest?base=USD&symbols=JPY");
-    const rate = res.data.rates.JPY;
-    return rate;
+    const res = await axios.get("https://open.er-api.com/v6/latest/USD");
+    return res.data.rates.JPY;
   } catch (e) {
-    console.error("レート取得失敗");
+    console.error("為替取得失敗:", e.message);
     return null;
   }
 }
@@ -40,14 +39,14 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const userMessage = event.message.text;
 
-      // ★リアルタイム価格取得
+      // リアル価格取得
       const price = await getUSDJPY();
 
       if (!price) {
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
-            replyToken: replyToken,
+            replyToken,
             messages: [{ type: "text", text: "為替取得エラー" }],
           },
           {
@@ -74,6 +73,7 @@ app.post("/webhook", async (req, res) => {
 ・必ずロングかショート（様子見禁止）
 ・現在価格ベースで計算
 ・スワップ記述は禁止
+・全項目必須
 
 【出力形式】
 
@@ -128,7 +128,7 @@ FRB：
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
-            replyToken: replyToken,
+            replyToken,
             messages: [{ type: "text", text: replyMessage }],
           },
           {
@@ -139,12 +139,12 @@ FRB：
           }
         );
       } catch (error) {
-        console.error(error);
+        console.error("AIエラー:", error.message);
 
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
-            replyToken: replyToken,
+            replyToken,
             messages: [{ type: "text", text: "AIエラー" }],
           },
           {
