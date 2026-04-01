@@ -16,19 +16,11 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===== 為替キャッシュ =====
-let cachedPrice = null;
-let lastFetchTime = 0;
+// ===== 価格保存（トレンド判定用）=====
+let priceHistory = []; // 最大2件だけ保持
 
-// ===== 為替取得（Alpha Vantage + キャッシュ）=====
+// ===== 為替取得 =====
 async function getUSDJPY() {
-  const now = Date.now();
-
-  // 60秒以内ならキャッシュ使用
-  if (cachedPrice && now - lastFetchTime < 60000) {
-    return cachedPrice;
-  }
-
   try {
     const apiKey = process.env.ALPHA_API_KEY;
 
@@ -39,19 +31,23 @@ async function getUSDJPY() {
     const rate =
       res.data["Realtime Currency Exchange Rate"]["5. Exchange Rate"];
 
-    const price = parseFloat(rate);
-
-    // キャッシュ更新
-    cachedPrice = price;
-    lastFetchTime = now;
-
-    return price;
+    return parseFloat(rate);
   } catch (e) {
     console.error("為替取得失敗:", e.message);
-
-    // API失敗でも最後の価格を使う
-    return cachedPrice;
+    return null;
   }
+}
+
+// ===== トレンド判定 =====
+function getTrend() {
+  if (priceHistory.length < 2) return "不明";
+
+  const prev = priceHistory[0];
+  const current = priceHistory[1];
+
+  if (current > prev) return "上昇";
+  if (current < prev) return "下降";
+  return "レンジ";
 }
 
 // ===== Webhook =====
@@ -84,6 +80,12 @@ app.post("/webhook", async (req, res) => {
         continue;
       }
 
+      // ===== 履歴更新 =====
+      priceHistory.push(price);
+      if (priceHistory.length > 2) priceHistory.shift();
+
+      const trend = getTrend();
+
       try {
         const aiResponse = await openai.chat.completions.create({
           model: "gpt-4o-mini",
@@ -93,14 +95,16 @@ app.post("/webhook", async (req, res) => {
               content: `
 あなたはプロのFXトレーダーです。
 
-現在のドル円価格は【${price.toFixed(2)}円】です。
+現在価格：${price.toFixed(2)}円
+直前価格：${priceHistory[0]?.toFixed(2) || "不明"}円
+トレンド判定：${trend}
 
 【ルール】
 ・必ずロングかショート（様子見禁止）
-・現在価格ベースで計算
+・トレンド判定を最優先に判断
 ・スワップ記述は禁止
 ・全項目必須
-・曖昧な表現禁止
+・ファンダは価格動きと矛盾させない
 
 【出力形式】
 
