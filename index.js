@@ -16,16 +16,14 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 🔥 リアルタイム価格取得（無料API）
+// 為替取得関数（無料API）
 async function getUSDJPY() {
   try {
-    const res = await axios.get(
-      "https://api.exchangerate-api.com/v4/latest/USD"
-    );
-    const jpy = res.data.rates.JPY;
-    return jpy;
+    const res = await axios.get("https://api.exchangerate.host/latest?base=USD&symbols=JPY");
+    const rate = res.data.rates.JPY;
+    return rate;
   } catch (e) {
-    console.error("価格取得エラー", e.message);
+    console.error("レート取得失敗");
     return null;
   }
 }
@@ -42,6 +40,7 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const userMessage = event.message.text;
 
+      // ★リアルタイム価格取得
       const price = await getUSDJPY();
 
       if (!price) {
@@ -49,12 +48,11 @@ app.post("/webhook", async (req, res) => {
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken: replyToken,
-            messages: [{ type: "text", text: "価格取得エラー" }],
+            messages: [{ type: "text", text: "為替取得エラー" }],
           },
           {
             headers: {
               Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-              "Content-Type": "application/json",
             },
           }
         );
@@ -68,19 +66,14 @@ app.post("/webhook", async (req, res) => {
             {
               role: "system",
               content: `
-content: `
 あなたはプロのFXトレーダーです。
 
 現在のドル円価格は【${price.toFixed(2)}円】です。
 
-【絶対ルール】
-・様子見は禁止（必ずロングかショート）
-・数字は必ず現在価格ベースで計算
-・適当な過去価格は禁止
-・当日の流れは現実的に（上昇→転換→下落など）
-・ファンダは必ず埋める（推測OK）
-・全項目必須
-・スワップに関する記述は禁止
+【ルール】
+・必ずロングかショート（様子見禁止）
+・現在価格ベースで計算
+・スワップ記述は禁止
 
 【出力形式】
 
@@ -119,8 +112,6 @@ FRB：
 
 【根拠】
 テクニカル＋市場心理
-
-
 `,
             },
             {
@@ -148,7 +139,7 @@ FRB：
           }
         );
       } catch (error) {
-        console.error(error.response?.data || error.message);
+        console.error(error);
 
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
@@ -159,7 +150,6 @@ FRB：
           {
             headers: {
               Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-              "Content-Type": "application/json",
             },
           }
         );
