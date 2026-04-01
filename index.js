@@ -16,11 +16,19 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 為替取得（安定版）
+// ★リアル為替（Alpha Vantage）
 async function getUSDJPY() {
   try {
-    const res = await axios.get("https://open.er-api.com/v6/latest/USD");
-    return res.data.rates.JPY;
+    const apiKey = process.env.ALPHA_API_KEY;
+
+    const url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=USD&to_currency=JPY&apikey=${apiKey}`;
+
+    const res = await axios.get(url);
+
+    const rate =
+      res.data["Realtime Currency Exchange Rate"]["5. Exchange Rate"];
+
+    return parseFloat(rate);
   } catch (e) {
     console.error("為替取得失敗:", e.message);
     return null;
@@ -39,7 +47,6 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const userMessage = event.message.text;
 
-      // リアル価格取得
       const price = await getUSDJPY();
 
       if (!price) {
@@ -47,7 +54,7 @@ app.post("/webhook", async (req, res) => {
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken,
-            messages: [{ type: "text", text: "為替取得エラー" }],
+            messages: [{ type: "text", text: "為替取得失敗（API制限の可能性）" }],
           },
           {
             headers: {
@@ -72,7 +79,7 @@ app.post("/webhook", async (req, res) => {
 【ルール】
 ・必ずロングかショート（様子見禁止）
 ・現在価格ベースで計算
-・スワップ記述は禁止
+・スワップ禁止
 ・全項目必須
 
 【出力形式】
