@@ -16,12 +16,10 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 為替取得（無料・制限ほぼなし）
+// 為替取得（無料・キー不要・安定）
 async function getUSDJPY() {
   try {
-    const res = await axios.get(
-      "https://api.exchangerate.host/latest?base=USD&symbols=JPY"
-    );
+    const res = await axios.get("https://open.er-api.com/v6/latest/USD");
     return res.data.rates.JPY;
   } catch (e) {
     console.error("為替取得失敗:", e.message);
@@ -73,8 +71,8 @@ app.post("/webhook", async (req, res) => {
 
 【ルール】
 ・必ずロング or ショート（様子見禁止）
-・現実的な価格で書く（±50pips以内）
-・当日の流れは「上げて→下げた」など実際の動きっぽく書く
+・±50pips以内で現実的に
+・当日の流れは「上げ→下げ」など実際っぽく書く
 ・スワップは書かない
 
 【形式】
