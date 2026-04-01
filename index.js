@@ -1,3 +1,4 @@
+
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
@@ -16,30 +17,44 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===== キャッシュ =====
-let cachedFX = null;
-let lastFetch = 0;
+// ===== 通貨マップ =====
+const PAIRS = {
+  "ドル円": { from: "USD", to: "JPY" },
+  "ユーロ円": { from: "EUR", to: "JPY" },
+  "ポンド円": { from: "GBP", to: "JPY" },
+  "豪ドル円": { from: "AUD", to: "JPY" },
+  "ユーロドル": { from: "EUR", to: "USD" },
+  "ポンドドル": { from: "GBP", to: "USD" },
+};
 
-// ===== 為替取得（5分足 + キャッシュ）=====
-async function getFXData() {
+// ===== キャッシュ =====
+let cache = {};
+let lastFetch = {};
+
+// ===== 為替取得 =====
+async function getFXData(pairKey) {
   const now = Date.now();
 
-  // 30秒キャッシュ
-  if (cachedFX && now - lastFetch < 30000) {
-    return cachedFX;
+  if (cache[pairKey] && now - (lastFetch[pairKey] || 0) < 300000) {
+    return cache[pairKey];
   }
 
+  const pair = PAIRS[pairKey];
+
   try {
-    const res = await axios.get(
-      `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${process.env.ALPHA_API_KEY}`
-    );
+    const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=${pair.from}&to_symbol=${pair.to}&interval=5min&apikey=${process.env.ALPHA_API_KEY}`;
+
+    const res = await axios.get(url);
+
+    if (res.data.Note || res.data.Information) {
+      console.error("API制限:", res.data);
+      return cache[pairKey];
+    }
 
     const data = res.data["Time Series FX (5min)"];
-
-    // API制限・エラー対策
     if (!data) {
       console.error("データなし:", res.data);
-      return null;
+      return cache[pairKey];
     }
 
     const times = Object.keys(data).slice(0, 20);
@@ -52,19 +67,28 @@ async function getFXData() {
     const high = Math.max(...prices);
     const low = Math.min(...prices);
 
-    // ===== トレンド判定 =====
     let trend = "レンジ";
     if (current > prices[5]) trend = "上昇";
     if (current < prices[5]) trend = "下降";
 
-    cachedFX = { current, high, low, trend };
-    lastFetch = now;
+    cache[pairKey] = { current, high, low, trend };
+    lastFetch[pairKey] = now;
 
-    return cachedFX;
+    console.log(`${pairKey}更新:`, cache[pairKey]);
+
+    return cache[pairKey];
   } catch (e) {
-    console.error("為替取得失敗:", e.message);
-    return null;
+    console.error("取得失敗:", e.message);
+    return cache[pairKey];
   }
+}
+
+// ===== 通貨判定 =====
+function detectPair(text) {
+  for (let key in PAIRS) {
+    if (text.includes(key)) return key;
+  }
+  return null;
 }
 
 // ===== Webhook =====
@@ -79,7 +103,31 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const userMessage = event.message.text;
 
-      const fx = await getFXData();
+      const pairKey = detectPair(userMessage);
+
+      if (!pairKey) {
+        await axios.post(
+          "https://api.line.me/v2/bot/message/reply",
+          {
+            replyToken,
+            messages: [
+              {
+                type: "text",
+                text: "対応通貨：ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル",
+              },
+            ],
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        continue;
+      }
+
+      const fx = await getFXData(pairKey);
 
       if (!fx) {
         await axios.post(
@@ -107,49 +155,33 @@ app.post("/webhook", async (req, res) => {
               content: `
 あなたはプロのFXトレーダーです。
 
+【通貨ペア】
+${pairKey}
+
 【リアルデータ】
-現在価格：${fx.current.toFixed(2)}円
-直近高値：${fx.high.toFixed(2)}円
-直近安値：${fx.low.toFixed(2)}円
+現在価格：${fx.current.toFixed(3)}
+高値：${fx.high.toFixed(3)}
+安値：${fx.low.toFixed(3)}
 トレンド：${fx.trend}
 
 【ルール】
-・必ずロング or ショート（様子見禁止）
-・トレンドに従う（上昇→ロング、下降→ショート）
-・±50pips以内で現実的に書く
-・存在しない情報を書かない（妄想禁止）
-・スワップ項目は禁止
+・ロング or ショートのみ（様子見禁止）
+・トレンドに従う
+・±50pips以内
+・妄想禁止
+・スワップ禁止
 
 【形式】
 【結論】
-ロング or ショート
-
 【トレンド】
-上昇 / 下降 / レンジ
-
 【現在の状況】
-（価格・高値・安値ベースで説明）
-
 【戦略】
-エントリーと損切り
-
 【エントリー】
-価格：
-
 【利確】
-pipsと価格：
-
 【損切り】
-pipsと価格：
-
 【目線】
-短期
-
 【ファンダ】
-1行で簡潔に
-
 【根拠】
-テクニカルベース
 `,
             },
             {
