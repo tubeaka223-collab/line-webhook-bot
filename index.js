@@ -6,18 +6,29 @@ const OpenAI = require("openai");
 const app = express();
 app.use(bodyParser.json());
 
-// 動作確認
+// ===== 動作確認 =====
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// OpenAI
+// ===== OpenAI =====
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ★リアル為替（Alpha Vantage）
+// ===== 為替キャッシュ =====
+let cachedPrice = null;
+let lastFetchTime = 0;
+
+// ===== 為替取得（Alpha Vantage + キャッシュ）=====
 async function getUSDJPY() {
+  const now = Date.now();
+
+  // 60秒以内ならキャッシュ使用
+  if (cachedPrice && now - lastFetchTime < 60000) {
+    return cachedPrice;
+  }
+
   try {
     const apiKey = process.env.ALPHA_API_KEY;
 
@@ -28,14 +39,22 @@ async function getUSDJPY() {
     const rate =
       res.data["Realtime Currency Exchange Rate"]["5. Exchange Rate"];
 
-    return parseFloat(rate);
+    const price = parseFloat(rate);
+
+    // キャッシュ更新
+    cachedPrice = price;
+    lastFetchTime = now;
+
+    return price;
   } catch (e) {
     console.error("為替取得失敗:", e.message);
-    return null;
+
+    // API失敗でも最後の価格を使う
+    return cachedPrice;
   }
 }
 
-// Webhook
+// ===== Webhook =====
 app.post("/webhook", async (req, res) => {
   console.log("Webhookきた");
 
@@ -54,7 +73,7 @@ app.post("/webhook", async (req, res) => {
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken,
-            messages: [{ type: "text", text: "為替取得失敗（API制限の可能性）" }],
+            messages: [{ type: "text", text: "為替取得エラー" }],
           },
           {
             headers: {
@@ -79,8 +98,9 @@ app.post("/webhook", async (req, res) => {
 【ルール】
 ・必ずロングかショート（様子見禁止）
 ・現在価格ベースで計算
-・スワップ禁止
+・スワップ記述は禁止
 ・全項目必須
+・曖昧な表現禁止
 
 【出力形式】
 
@@ -167,5 +187,6 @@ FRB：
   res.sendStatus(200);
 });
 
+// ===== 起動 =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("サーバー稼働中"));
