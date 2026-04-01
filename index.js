@@ -6,17 +6,15 @@ const OpenAI = require("openai");
 const app = express();
 app.use(bodyParser.json());
 
-// 動作確認
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// 為替レート取得（USDJPY）
+// 為替取得
 async function getUSDJPY() {
   try {
     const res = await axios.get(
@@ -24,15 +22,11 @@ async function getUSDJPY() {
     );
     return res.data.rates.JPY;
   } catch (e) {
-    console.error("レート取得エラー", e.message);
     return null;
   }
 }
 
-// Webhook
 app.post("/webhook", async (req, res) => {
-  console.log("Webhook受信");
-
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
@@ -42,8 +36,10 @@ app.post("/webhook", async (req, res) => {
       const userMessage = event.message.text;
 
       try {
-        // リアルタイム価格取得
         const price = await getUSDJPY();
+
+        // ←ここが最重要
+        const fixedPrice = Number(price).toFixed(2);
 
         const aiResponse = await openai.chat.completions.create({
           model: "gpt-4o-mini",
@@ -52,11 +48,12 @@ app.post("/webhook", async (req, res) => {
               role: "system",
               content: `
 あなたはプロのFXトレーダーです。
-初心者にも分かりやすく答えてください。
 
-現在のドル円価格は ${price} 円です。
+現在のドル円価格は【${fixedPrice}円】です。
+この価格を必ず基準にして分析してください。
+絶対に別の価格（例：113円など）を使ってはいけません。
 
-必ず以下の形式で回答してください：
+必ず以下の形式で答えてください：
 
 【結論】
 ロング / ショート / 様子見
@@ -65,13 +62,13 @@ app.post("/webhook", async (req, res) => {
 レンジ or 上昇トレンド or 下降トレンド
 
 【エントリー目安】
-現在価格から何pipsでエントリー
+${fixedPrice}円を基準に±何pipsかで記載
 
 【利確目安】
-何pipsで利確
+pipsで記載
 
 【損切り】
-何pipsで損切り
+pipsで記載
 
 【目線】
 短期・中期・長期
@@ -79,8 +76,7 @@ app.post("/webhook", async (req, res) => {
 【理由】
 シンプルに
 
-※投資判断はユーザーに委ねてください。
-※断定的な助言は禁止
+※投資判断はユーザーに委ねること
               `,
             },
             {
@@ -108,8 +104,6 @@ app.post("/webhook", async (req, res) => {
           }
         );
       } catch (error) {
-        console.error("エラー:", error.response?.data || error.message);
-
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
