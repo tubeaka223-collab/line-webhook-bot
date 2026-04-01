@@ -16,6 +16,20 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// 🔥 リアルタイム価格取得（無料API）
+async function getUSDJPY() {
+  try {
+    const res = await axios.get(
+      "https://api.exchangerate-api.com/v4/latest/USD"
+    );
+    const jpy = res.data.rates.JPY;
+    return jpy;
+  } catch (e) {
+    console.error("価格取得エラー", e.message);
+    return null;
+  }
+}
+
 // Webhook
 app.post("/webhook", async (req, res) => {
   console.log("Webhookきた");
@@ -28,7 +42,24 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const userMessage = event.message.text;
 
-      const fixedPrice = 158.30; // 仮の価格（後でAPI化できる）
+      const price = await getUSDJPY();
+
+      if (!price) {
+        await axios.post(
+          "https://api.line.me/v2/bot/message/reply",
+          {
+            replyToken: replyToken,
+            messages: [{ type: "text", text: "価格取得エラー" }],
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        continue;
+      }
 
       try {
         const aiResponse = await openai.chat.completions.create({
@@ -39,25 +70,19 @@ app.post("/webhook", async (req, res) => {
               content: `
 あなたはプロのFXトレーダーです。
 
-現在のドル円価格は【${fixedPrice}円】です。
+現在のドル円価格は【${price.toFixed(2)}円】です。
 
-重要：
-・必ず「ロング」か「ショート」を選ぶ（様子見は禁止）
-・必ずすべての項目を埋める
-・不明な情報は「不明」と書くこと
-・実際のデータが無いのに想像で書くのは禁止
-・当日の流れは「推測」ではなく、価格ベースで説明する
-・不明な場合でも「一般的な傾向から推測して埋める」こと
-・完全な空欄は禁止
-・ただし断定ではなく「〜と考えられる」と書くこと
+【絶対ルール】
+・様子見は禁止（必ずロングかショート）
+・数字は必ず現在価格ベースで計算
+・適当な過去価格は禁止
+・当日の流れは「上昇→転換→下落」など現実的に書く
+・ファンダは必ず埋める（推測OK）
+・スワップは一般的傾向でOK
+・すべて埋める
 
-例：
-日米金利差：米国の方が高く、ドル買い圧力があると考えられる
-FRB：高金利維持の姿勢と考えられる
-日銀：緩和継続と考えられる
-例：
-× ロンドン時間 上昇
-○ 158.5→158.3に下落（-20pips）
+【出力形式】
+
 【結論】
 ロング or ショート
 
@@ -97,9 +122,6 @@ FRB：
 
 【根拠】
 テクニカル＋市場心理
-
-※様子見は禁止
-※未記入は禁止
 `,
             },
             {
@@ -127,13 +149,13 @@ FRB：
           }
         );
       } catch (error) {
-        console.error(error);
+        console.error(error.response?.data || error.message);
 
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken: replyToken,
-            messages: [{ type: "text", text: "エラー発生" }],
+            messages: [{ type: "text", text: "AIエラー" }],
           },
           {
             headers: {
