@@ -53,6 +53,7 @@ async function getFXData() {
 
 // ===== Webhook =====
 app.post("/webhook", async (req, res) => {
+  console.log("新コード動いてる");
   console.log("Webhookきた");
 
   const events = req.body.events;
