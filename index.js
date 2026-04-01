@@ -6,51 +6,30 @@ const OpenAI = require("openai");
 const app = express();
 app.use(bodyParser.json());
 
-// ===== 動作確認 =====
+// 動作確認
 app.get("/", (req, res) => {
   res.send("OK");
 });
 
-// ===== OpenAI =====
+// OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===== 価格保存（トレンド判定用）=====
-let priceHistory = []; // 最大2件だけ保持
-
-// ===== 為替取得 =====
+// 為替取得（無料・制限ほぼなし）
 async function getUSDJPY() {
   try {
-    const apiKey = process.env.ALPHA_API_KEY;
-
-    const url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=USD&to_currency=JPY&apikey=${apiKey}`;
-
-    const res = await axios.get(url);
-
-    const rate =
-      res.data["Realtime Currency Exchange Rate"]["5. Exchange Rate"];
-
-    return parseFloat(rate);
+    const res = await axios.get(
+      "https://api.exchangerate.host/latest?base=USD&symbols=JPY"
+    );
+    return res.data.rates.JPY;
   } catch (e) {
     console.error("為替取得失敗:", e.message);
     return null;
   }
 }
 
-// ===== トレンド判定 =====
-function getTrend() {
-  if (priceHistory.length < 2) return "不明";
-
-  const prev = priceHistory[0];
-  const current = priceHistory[1];
-
-  if (current > prev) return "上昇";
-  if (current < prev) return "下降";
-  return "レンジ";
-}
-
-// ===== Webhook =====
+// Webhook
 app.post("/webhook", async (req, res) => {
   console.log("Webhookきた");
 
@@ -74,17 +53,12 @@ app.post("/webhook", async (req, res) => {
           {
             headers: {
               Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
             },
           }
         );
         continue;
       }
-
-      // ===== 履歴更新 =====
-      priceHistory.push(price);
-      if (priceHistory.length > 2) priceHistory.shift();
-
-      const trend = getTrend();
 
       try {
         const aiResponse = await openai.chat.completions.create({
@@ -95,19 +69,15 @@ app.post("/webhook", async (req, res) => {
               content: `
 あなたはプロのFXトレーダーです。
 
-現在価格：${price.toFixed(2)}円
-直前価格：${priceHistory[0]?.toFixed(2) || "不明"}円
-トレンド判定：${trend}
+現在のドル円価格は【${price.toFixed(2)}円】です。
 
 【ルール】
-・必ずロングかショート（様子見禁止）
-・トレンド判定を最優先に判断
-・スワップ記述は禁止
-・全項目必須
-・ファンダは価格動きと矛盾させない
+・必ずロング or ショート（様子見禁止）
+・現実的な価格で書く（±50pips以内）
+・当日の流れは「上げて→下げた」など実際の動きっぽく書く
+・スワップは書かない
 
-【出力形式】
-
+【形式】
 【結論】
 ロング or ショート
 
@@ -120,17 +90,17 @@ app.post("/webhook", async (req, res) => {
 ・現在の動き：
 
 【戦略】
-・どこで入るか
-・どこで損切りか
+・どこで入るか：
+・どこで損切りか：
 
 【エントリー】
-価格
+価格：
 
 【利確】
-pipsと価格
+pipsと価格：
 
 【損切り】
-pipsと価格
+pipsと価格：
 
 【目線】
 短期
@@ -181,6 +151,7 @@ FRB：
           {
             headers: {
               Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+              "Content-Type": "application/json",
             },
           }
         );
@@ -191,6 +162,5 @@ FRB：
   res.sendStatus(200);
 });
 
-// ===== 起動 =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("サーバー稼働中"));
