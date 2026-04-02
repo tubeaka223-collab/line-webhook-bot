@@ -1,104 +1,116 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
-const OpenAI = require("openai");
 
 const app = express();
 app.use(bodyParser.json());
 
-// ===== OpenAI =====
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 // ===== キャッシュ =====
-let cachedPrice = null;
+let cached = null;
 let lastFetch = 0;
 
 // ===== 通貨判定 =====
 function detectPair(text) {
   const pairs = {
     "ドル円": { base: "USD", quote: "JPY" },
-    "ユーロ円": { base: "EUR", quote: "JPY" },
-    "ポンド円": { base: "GBP", quote: "JPY" },
-    "ユーロドル": { base: "EUR", quote: "USD" },
-    "ポンドドル": { base: "GBP", quote: "USD" },
   };
 
-  for (let key in pairs) {
-    if (text.includes(key)) return { name: key, ...pairs[key] };
-  }
-
-  return { name: "ドル円", base: "USD", quote: "JPY" };
+  return pairs["ドル円"];
 }
 
-// ===== 為替取得（最強版）=====
-async function getRate(base, quote) {
+// ===== 5分足取得（Alpha Vantage）=====
+async function getFX() {
   const now = Date.now();
 
-  // 60秒キャッシュ
-  if (cachedPrice && now - lastFetch < 60000) {
-    return cachedPrice;
-  }
+  if (cached && now - lastFetch < 60000) return cached;
 
-  // ===== ① exchangerate.host =====
   try {
     const res = await axios.get(
-      `https://api.exchangerate.host/convert?from=${base}&to=${quote}`
+      `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${process.env.ALPHA_API_KEY}`
     );
-    if (res.data && res.data.result) {
-      cachedPrice = res.data.result;
-      lastFetch = now;
-      return cachedPrice;
+
+    const data = res.data["Time Series FX (5min)"];
+    if (!data) {
+      console.log("データなし", res.data);
+      return null;
     }
-  } catch (e) {
-    console.log("①失敗");
-  }
 
-  // ===== ② frankfurter =====
-  try {
-    const res = await axios.get(
-      `https://api.frankfurter.app/latest?from=${base}&to=${quote}`
-    );
-    if (res.data && res.data.rates) {
-      cachedPrice = res.data.rates[quote];
-      lastFetch = now;
-      return cachedPrice;
+    const times = Object.keys(data).slice(0, 20);
+    const prices = times.map(t => parseFloat(data[t]["4. close"]));
+
+    const current = prices[0];
+    const prev = prices[5];
+
+    const high = Math.max(...prices);
+    const low = Math.min(...prices);
+
+    let trend = "レンジ";
+    if (current > prev) trend = "上昇";
+    if (current < prev) trend = "下降";
+
+    cached = { current, high, low, trend };
+    lastFetch = now;
+
+    return cached;
+
+  } catch (e) {
+    console.log("取得失敗", e.message);
+    return null;
+  }
+}
+
+// ===== エントリーロジック =====
+function decideTrade(fx) {
+  const { current, high, low, trend } = fx;
+
+  let direction, entry, tp, sl;
+
+  if (trend === "上昇") {
+    direction = "ロング";
+    entry = current;
+    tp = current + 0.4;
+    sl = current - 0.2;
+  } else if (trend === "下降") {
+    direction = "ショート";
+    entry = current;
+    tp = current - 0.4;
+    sl = current + 0.2;
+  } else {
+    // レンジ → ブレイク狙い
+    if (current > (high - 0.05)) {
+      direction = "ロング";
+      entry = current;
+      tp = current + 0.3;
+      sl = current - 0.2;
+    } else {
+      direction = "ショート";
+      entry = current;
+      tp = current - 0.3;
+      sl = current + 0.2;
     }
-  } catch (e) {
-    console.log("②失敗");
   }
 
-  // ===== 最終手段：キャッシュ =====
-  if (cachedPrice) {
-    console.log("キャッシュ返す");
-    return cachedPrice;
-  }
-
-  return null;
+  return { direction, entry, tp, sl };
 }
 
 // ===== Webhook =====
 app.post("/webhook", async (req, res) => {
-  console.log("Webhookきた");
-
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
   for (let event of events) {
-    if (event.type === "message" && event.message.type === "text") {
+    if (event.type === "message") {
+
       const replyToken = event.replyToken;
-      const userMessage = event.message.text;
 
-      const pair = detectPair(userMessage);
-      const price = await getRate(pair.base, pair.quote);
+      const fx = await getFX();
 
-      if (!price) {
+      if (!fx) {
         await axios.post(
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken,
-            messages: [{ type: "text", text: "為替取得エラー（API全滅）" }],
+            messages: [{ type: "text", text: "為替取得エラー" }],
           },
           {
             headers: {
@@ -110,45 +122,29 @@ app.post("/webhook", async (req, res) => {
         continue;
       }
 
-      // ===== ロジックトレード（AI依存しない）=====
-      let entry = price;
-      let tp, sl, direction;
-
-      // シンプルトレンド判定（疑似）
-      if (Math.random() > 0.5) {
-        direction = "ロング";
-        tp = entry + 0.4;
-        sl = entry - 0.2;
-      } else {
-        direction = "ショート";
-        tp = entry - 0.4;
-        sl = entry + 0.2;
-      }
+      const trade = decideTrade(fx);
 
       const message = `
-【通貨】
-${pair.name}
-
 【結論】
-${direction}
+${trade.direction}
 
-【現在価格】
-${price.toFixed(2)}
+【トレンド（5分足）】
+${fx.trend}
+
+【現在の状況】
+現在:${fx.current.toFixed(2)} / 高値:${fx.high.toFixed(2)} / 安値:${fx.low.toFixed(2)}
 
 【エントリー】
-${entry.toFixed(2)}
+${trade.entry.toFixed(2)}
 
 【利確】
-${tp.toFixed(2)}（40pips）
+${trade.tp.toFixed(2)}
 
 【損切り】
-${sl.toFixed(2)}（20pips）
-
-【目線】
-短期
+${trade.sl.toFixed(2)}
 
 【根拠】
-短期的な値動きと価格帯から機械的に判断
+5分足ベースでトレンド方向に順張り
 `;
 
       await axios.post(
@@ -170,6 +166,4 @@ ${sl.toFixed(2)}（20pips）
   res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000, () =>
-  console.log("サーバー稼働中")
-);
+app.listen(process.env.PORT || 3000);
