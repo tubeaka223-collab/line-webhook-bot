@@ -9,29 +9,17 @@ app.use(bodyParser.json());
 let cached = null;
 let lastFetch = 0;
 
-// ===== 通貨判定 =====
-function detectPair(text) {
-  const pairs = {
-    "ドル円": { base: "USD", quote: "JPY" },
-  };
-
-  return pairs["ドル円"];
-}
-
-// ===== 5分足取得（Alpha Vantage）=====
-async function getFX() {
-  const now = Date.now();
-
-  if (cached && now - lastFetch < 60000) return cached;
-
+// ===== 5分足（Alpha）=====
+async function getAlpha() {
   try {
     const res = await axios.get(
       `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${process.env.ALPHA_API_KEY}`
     );
 
     const data = res.data["Time Series FX (5min)"];
+
     if (!data) {
-      console.log("データなし", res.data);
+      console.log("Alpha制限 or エラー:", res.data);
       return null;
     }
 
@@ -40,7 +28,6 @@ async function getFX() {
 
     const current = prices[0];
     const prev = prices[5];
-
     const high = Math.max(...prices);
     const low = Math.min(...prices);
 
@@ -48,18 +35,66 @@ async function getFX() {
     if (current > prev) trend = "上昇";
     if (current < prev) trend = "下降";
 
-    cached = { current, high, low, trend };
-    lastFetch = now;
-
-    return cached;
+    return { current, high, low, trend };
 
   } catch (e) {
-    console.log("取得失敗", e.message);
+    console.log("Alpha失敗");
     return null;
   }
 }
 
-// ===== エントリーロジック =====
+// ===== 単発レート（保険）=====
+async function getFallback() {
+  try {
+    const res = await axios.get(
+      "https://api.frankfurter.app/latest?from=USD&to=JPY"
+    );
+
+    const price = res.data.rates.JPY;
+
+    return {
+      current: price,
+      high: price,
+      low: price,
+      trend: "レンジ"
+    };
+
+  } catch (e) {
+    console.log("Fallback失敗");
+    return null;
+  }
+}
+
+// ===== メイン取得 =====
+async function getFX() {
+  const now = Date.now();
+
+  // 60秒キャッシュ
+  if (cached && now - lastFetch < 60000) return cached;
+
+  // ① Alpha
+  let fx = await getAlpha();
+
+  // ② fallback
+  if (!fx) {
+    fx = await getFallback();
+  }
+
+  // ③ キャッシュ
+  if (!fx && cached) {
+    console.log("キャッシュ使用");
+    return cached;
+  }
+
+  if (fx) {
+    cached = fx;
+    lastFetch = now;
+  }
+
+  return fx;
+}
+
+// ===== ロジック =====
 function decideTrade(fx) {
   const { current, high, low, trend } = fx;
 
@@ -76,18 +111,16 @@ function decideTrade(fx) {
     tp = current - 0.4;
     sl = current + 0.2;
   } else {
-    // レンジ → ブレイク狙い
-    if (current > (high - 0.05)) {
+    if (current > high - 0.05) {
       direction = "ロング";
-      entry = current;
       tp = current + 0.3;
       sl = current - 0.2;
     } else {
       direction = "ショート";
-      entry = current;
       tp = current - 0.3;
       sl = current + 0.2;
     }
+    entry = current;
   }
 
   return { direction, entry, tp, sl };
@@ -110,7 +143,7 @@ app.post("/webhook", async (req, res) => {
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken,
-            messages: [{ type: "text", text: "為替取得エラー" }],
+            messages: [{ type: "text", text: "為替取得エラー（API制限）" }],
           },
           {
             headers: {
@@ -131,8 +164,8 @@ ${trade.direction}
 【トレンド（5分足）】
 ${fx.trend}
 
-【現在の状況】
-現在:${fx.current.toFixed(2)} / 高値:${fx.high.toFixed(2)} / 安値:${fx.low.toFixed(2)}
+【現在】
+${fx.current.toFixed(2)}
 
 【エントリー】
 ${trade.entry.toFixed(2)}
@@ -142,9 +175,6 @@ ${trade.tp.toFixed(2)}
 
 【損切り】
 ${trade.sl.toFixed(2)}
-
-【根拠】
-5分足ベースでトレンド方向に順張り
 `;
 
       await axios.post(
