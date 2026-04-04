@@ -9,7 +9,7 @@ app.use(bodyParser.json());
 let cached = null;
 let lastFetch = 0;
 
-// ===== 5分足（Alpha）=====
+// ===== 5分足取得 =====
 async function getAlpha() {
   try {
     const res = await axios.get(
@@ -17,25 +17,29 @@ async function getAlpha() {
     );
 
     const data = res.data["Time Series FX (5min)"];
+    if (!data) return null;
 
-    if (!data) {
-      console.log("Alpha制限 or エラー:", res.data);
-      return null;
-    }
-
-    const times = Object.keys(data).slice(0, 20);
+    const times = Object.keys(data).slice(0, 50);
     const prices = times.map(t => parseFloat(data[t]["4. close"]));
 
     const current = prices[0];
-    const prev = prices[5];
     const high = Math.max(...prices);
     const low = Math.min(...prices);
 
-    let trend = "レンジ";
-    if (current > prev) trend = "上昇";
-    if (current < prev) trend = "下降";
+    // ===== 平均 =====
+    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
 
-    return { current, high, low, trend };
+    // ===== トレンド判定 =====
+    let trend = "レンジ";
+
+    if (current > avg + 0.05) trend = "上昇";
+    else if (current < avg - 0.05) trend = "下降";
+
+    // ===== ボラ判定 =====
+    const range = high - low;
+    if (range < 0.15) trend = "レンジ";
+
+    return { current, high, low, trend, range };
 
   } catch (e) {
     console.log("Alpha失敗");
@@ -43,7 +47,7 @@ async function getAlpha() {
   }
 }
 
-// ===== 単発レート（保険）=====
+// ===== fallback =====
 async function getFallback() {
   try {
     const res = await axios.get(
@@ -56,11 +60,11 @@ async function getFallback() {
       current: price,
       high: price,
       low: price,
-      trend: "レンジ"
+      trend: "レンジ",
+      range: 0
     };
 
   } catch (e) {
-    console.log("Fallback失敗");
     return null;
   }
 }
@@ -69,22 +73,12 @@ async function getFallback() {
 async function getFX() {
   const now = Date.now();
 
-  // 60秒キャッシュ
   if (cached && now - lastFetch < 60000) return cached;
 
-  // ① Alpha
   let fx = await getAlpha();
+  if (!fx) fx = await getFallback();
 
-  // ② fallback
-  if (!fx) {
-    fx = await getFallback();
-  }
-
-  // ③ キャッシュ
-  if (!fx && cached) {
-    console.log("キャッシュ使用");
-    return cached;
-  }
+  if (!fx && cached) return cached;
 
   if (fx) {
     cached = fx;
@@ -94,33 +88,46 @@ async function getFX() {
   return fx;
 }
 
-// ===== ロジック =====
+// ===== 売買ロジック =====
 function decideTrade(fx) {
-  const { current, high, low, trend } = fx;
+  const { current, high, low, trend, range } = fx;
 
-  let direction, entry, tp, sl;
+  let direction = "様子見";
+  let entry = current;
+  let tp = null;
+  let sl = null;
 
+  // ===== トレンド相場 =====
   if (trend === "上昇") {
     direction = "ロング";
-    entry = current;
     tp = current + 0.4;
     sl = current - 0.2;
-  } else if (trend === "下降") {
+  }
+
+  else if (trend === "下降") {
     direction = "ショート";
-    entry = current;
     tp = current - 0.4;
     sl = current + 0.2;
-  } else {
-    if (current > high - 0.05) {
-      direction = "ロング";
-      tp = current + 0.3;
-      sl = current - 0.2;
-    } else {
+  }
+
+  // ===== レンジ相場 =====
+  else {
+    // 上限付近 → ショート
+    if (current >= high - 0.05) {
       direction = "ショート";
       tp = current - 0.3;
       sl = current + 0.2;
     }
-    entry = current;
+    // 下限付近 → ロング
+    else if (current <= low + 0.05) {
+      direction = "ロング";
+      tp = current + 0.3;
+      sl = current - 0.2;
+    }
+    // 中央 → 見送り
+    else {
+      direction = "様子見";
+    }
   }
 
   return { direction, entry, tp, sl };
@@ -135,7 +142,6 @@ app.post("/webhook", async (req, res) => {
     if (event.type === "message") {
 
       const replyToken = event.replyToken;
-
       const fx = await getFX();
 
       if (!fx) {
@@ -143,7 +149,7 @@ app.post("/webhook", async (req, res) => {
           "https://api.line.me/v2/bot/message/reply",
           {
             replyToken,
-            messages: [{ type: "text", text: "為替取得エラー（API制限）" }],
+            messages: [{ type: "text", text: "為替取得エラー" }],
           },
           {
             headers: {
@@ -171,10 +177,10 @@ ${fx.current.toFixed(2)}
 ${trade.entry.toFixed(2)}
 
 【利確】
-${trade.tp.toFixed(2)}
+${trade.tp ? trade.tp.toFixed(2) : "-"}
 
 【損切り】
-${trade.sl.toFixed(2)}
+${trade.sl ? trade.sl.toFixed(2) : "-"}
 `;
 
       await axios.post(
