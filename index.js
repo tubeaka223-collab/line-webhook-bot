@@ -89,18 +89,13 @@ function decideTrade(fx) {
   const { current, high, low, trend, range } = fx;
 
   let direction = "様子見";
-  let entry = current;
+  let entry = null;
   let tp = null;
   let sl = null;
 
   // ===== ブレイク回避 =====
   if (current > high || current < low) {
-    return {
-      direction: "様子見",
-      entry: current,
-      tp: null,
-      sl: null
-    };
+    return { direction, entry, tp, sl };
   }
 
   // ===== トレンド =====
@@ -122,7 +117,6 @@ function decideTrade(fx) {
   else {
     if (range > 0.3) {
 
-      // 上限 → ショート
       if (current >= high - 0.05) {
         direction = "ショート";
         entry = current + 0.02;
@@ -130,20 +124,12 @@ function decideTrade(fx) {
         sl = current + 0.2;
       }
 
-      // 下限 → ロング
       else if (current <= low + 0.05) {
         direction = "ロング";
         entry = current - 0.02;
         tp = current + 0.3;
         sl = current - 0.2;
       }
-
-      else {
-        direction = "様子見";
-      }
-
-    } else {
-      direction = "様子見";
     }
   }
 
@@ -222,13 +208,13 @@ ${fx.trend}
 ${fx.current.toFixed(2)}
 
 【エントリー】
-${trade.entry.toFixed(2)}
+${trade.entry !== null ? trade.entry.toFixed(2) : "-"}
 
 【利確】
-${trade.tp ? trade.tp.toFixed(2) : "-"}
+${trade.tp !== null ? trade.tp.toFixed(2) : "-"}
 
 【損切り】
-${trade.sl ? trade.sl.toFixed(2) : "-"}
+${trade.sl !== null ? trade.sl.toFixed(2) : "-"}
 
 【理由】
 ${generateReason(fx, trade)}
