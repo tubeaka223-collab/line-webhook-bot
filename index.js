@@ -35,7 +35,7 @@ async function getAlpha() {
     const range = high - low;
     if (range < 0.15) trend = "レンジ";
 
-    return { current, high, low, trend, range };
+    return { current, high, low, trend, range, avg };
 
   } catch (e) {
     console.log("Alpha失敗");
@@ -57,7 +57,8 @@ async function getFallback() {
       high: price,
       low: price,
       trend: "レンジ",
-      range: 0
+      range: 0,
+      avg: price
     };
 
   } catch (e) {
@@ -120,15 +121,15 @@ function decideTrade(fx) {
       if (current >= high - 0.05) {
         direction = "ショート";
         entry = current + 0.02;
-        tp = current - 0.3;
-        sl = current + 0.2;
+        tp = current - (range * 0.5);
+        sl = high + 0.05;
       }
 
       else if (current <= low + 0.05) {
         direction = "ロング";
         entry = current - 0.02;
-        tp = current + 0.3;
-        sl = current - 0.2;
+        tp = current + (range * 0.5);
+        sl = low - 0.05;
       }
     }
   }
@@ -136,31 +137,34 @@ function decideTrade(fx) {
   return { direction, entry, tp, sl };
 }
 
-// ===== 理由生成 =====
+// ===== 理由生成（収益化レベル）=====
 function generateReason(fx, trade) {
-  const { trend, range } = fx;
+  const { current, high, low, trend, range, avg } = fx;
+
+  const rangeInfo = `レンジ幅：約${range.toFixed(2)}円`;
+  const avgInfo = `平均価格：約${avg.toFixed(2)}`;
 
   if (trade.direction === "様子見") {
-    return "明確なトレンドやエントリーポイントがなく、無理なトレードを避けるため様子見。";
+    return `${rangeInfo}と小さく、トレンドも不明確。優位性のあるポイントではないため見送り。無理なトレードは期待値が低い。`;
   }
 
   if (trend === "上昇") {
-    return "上昇トレンドのため順張りロング。押し目を狙ったエントリーで、利確は直近の値幅、損切りはサポート割れに設定。";
+    return `現在価格${current.toFixed(2)}は${avgInfo}より上にあり上昇トレンド。押し目として${trade.entry.toFixed(2)}でロング。利確は平均的な値幅（約0.4円）、損切りはトレンド崩れライン（約0.2円下）に設定。`;
   }
 
   if (trend === "下降") {
-    return "下降トレンドのため順張りショート。戻り売りを狙い、利確は下方向の値幅、損切りはレジスタンス上に設定。";
+    return `現在価格${current.toFixed(2)}は${avgInfo}より下にあり下降トレンド。戻り売りとして${trade.entry.toFixed(2)}でショート。利確は平均的な下落幅、損切りはレジスタンス上に設定。`;
   }
 
   if (trend === "レンジ") {
+    const mid = (high + low) / 2;
+
     if (trade.direction === "ショート") {
-      return `レンジ上限付近のため反発狙いのショート。高値圏で売り圧力を想定し、利確は中央、損切りは上抜けに設定。${
-        range > 0.5 ? "ボラティリティが高く、為替介入や急変動のリスクにも注意。" : ""
-      }`;
+      return `現在価格はレンジ上限（${high.toFixed(2)}）付近。反発期待でショート。利確は中央値（${mid.toFixed(2)}）、損切りは上抜けライン（${trade.sl.toFixed(2)}）。${rangeInfo}で値幅も十分。`;
     }
 
     if (trade.direction === "ロング") {
-      return "レンジ下限付近のため反発狙いのロング。安値圏で買いを想定し、利確は中央、損切りは下抜けに設定。";
+      return `現在価格はレンジ下限（${low.toFixed(2)}）付近。反発期待でロング。利確は中央値（${mid.toFixed(2)}）、損切りは下抜けライン（${trade.sl.toFixed(2)}）。${rangeInfo}で値幅も十分。`;
     }
   }
 
