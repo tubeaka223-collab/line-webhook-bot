@@ -35,7 +35,7 @@ async function getAlpha() {
     const range = high - low;
     if (range < 0.15) trend = "レンジ";
 
-    return { current, high, low, trend, range, avg };
+    return { current, high, low, trend, range, avg, isValid: true };
 
   } catch (e) {
     console.log("Alpha失敗");
@@ -58,7 +58,8 @@ async function getFallback() {
       low: price,
       trend: "レンジ",
       range: 0,
-      avg: price
+      avg: price,
+      isValid: false // ←ここ重要
     };
 
   } catch (e) {
@@ -87,6 +88,10 @@ async function getFX() {
 
 // ===== 売買ロジック =====
 function decideTrade(fx) {
+  if (!fx.isValid) {
+    return { direction: "様子見", entry: null, tp: null, sl: null };
+  }
+
   const { current, high, low, trend, range } = fx;
 
   let direction = "様子見";
@@ -94,12 +99,11 @@ function decideTrade(fx) {
   let tp = null;
   let sl = null;
 
-  // ===== ブレイク回避 =====
+  // ブレイク回避
   if (current > high || current < low) {
     return { direction, entry, tp, sl };
   }
 
-  // ===== トレンド =====
   if (trend === "上昇") {
     direction = "ロング";
     entry = current - 0.02;
@@ -114,7 +118,6 @@ function decideTrade(fx) {
     sl = current + 0.2;
   }
 
-  // ===== レンジ =====
   else {
     if (range > 0.3) {
 
@@ -137,34 +140,40 @@ function decideTrade(fx) {
   return { direction, entry, tp, sl };
 }
 
-// ===== 理由生成（収益化レベル）=====
+// ===== 理由生成 =====
 function generateReason(fx, trade) {
+
+  // ★ fallback対策
+  if (!fx.isValid) {
+    return "現在データ取得制限中のため正確な分析ができません。時間をおいて再試行してください。";
+  }
+
   const { current, high, low, trend, range, avg } = fx;
 
   const rangeInfo = `レンジ幅：約${range.toFixed(2)}円`;
   const avgInfo = `平均価格：約${avg.toFixed(2)}`;
 
   if (trade.direction === "様子見") {
-    return `${rangeInfo}と小さく、トレンドも不明確。優位性のあるポイントではないため見送り。無理なトレードは期待値が低い。`;
+    return `${rangeInfo}と小さく、トレンドも不明確。優位性のあるポイントではないため見送り。`;
   }
 
   if (trend === "上昇") {
-    return `現在価格${current.toFixed(2)}は${avgInfo}より上にあり上昇トレンド。押し目として${trade.entry.toFixed(2)}でロング。利確は平均的な値幅（約0.4円）、損切りはトレンド崩れライン（約0.2円下）に設定。`;
+    return `現在価格${current.toFixed(2)}は${avgInfo}より上で上昇トレンド。押し目ロング。`;
   }
 
   if (trend === "下降") {
-    return `現在価格${current.toFixed(2)}は${avgInfo}より下にあり下降トレンド。戻り売りとして${trade.entry.toFixed(2)}でショート。利確は平均的な下落幅、損切りはレジスタンス上に設定。`;
+    return `現在価格${current.toFixed(2)}は${avgInfo}より下で下降トレンド。戻り売り。`;
   }
 
   if (trend === "レンジ") {
     const mid = (high + low) / 2;
 
     if (trade.direction === "ショート") {
-      return `現在価格はレンジ上限（${high.toFixed(2)}）付近。反発期待でショート。利確は中央値（${mid.toFixed(2)}）、損切りは上抜けライン（${trade.sl.toFixed(2)}）。${rangeInfo}で値幅も十分。`;
+      return `レンジ上限（${high.toFixed(2)}）付近のためショート。利確は${mid.toFixed(2)}。`;
     }
 
     if (trade.direction === "ロング") {
-      return `現在価格はレンジ下限（${low.toFixed(2)}）付近。反発期待でロング。利確は中央値（${mid.toFixed(2)}）、損切りは下抜けライン（${trade.sl.toFixed(2)}）。${rangeInfo}で値幅も十分。`;
+      return `レンジ下限（${low.toFixed(2)}）付近のためロング。利確は${mid.toFixed(2)}。`;
     }
   }
 
@@ -206,7 +215,7 @@ app.post("/webhook", async (req, res) => {
 ${trade.direction}
 
 【トレンド（5分足）】
-${fx.trend}
+${fx.isValid ? fx.trend : "-"}
 
 【現在】
 ${fx.current.toFixed(2)}
