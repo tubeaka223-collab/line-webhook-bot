@@ -5,25 +5,52 @@ const axios = require("axios");
 const app = express();
 app.use(bodyParser.json());
 
-// ===== 1回だけ取得 =====
+// ===== キャッシュ =====
+let cache = null;
+let lastFetch = 0;
+
+// ===== データ取得（1分キャッシュ）=====
 async function getData() {
+  const now = Date.now();
+
+  // 60秒以内はキャッシュ使用
+  if (cache && now - lastFetch < 60000) {
+    console.log("キャッシュ使用");
+    return cache;
+  }
+
   try {
     const res = await axios.get(
       `https://api.twelvedata.com/time_series?symbol=USD/JPY&interval=5min&outputsize=60&apikey=${process.env.TWELVE_API_KEY}`
     );
 
-    return res.data.values.map(v => parseFloat(v.close));
+    // エラーチェック
+    if (!res.data.values) {
+      console.log("APIエラー:", res.data);
+      return cache; // 前回データ使う
+    }
 
-  } catch {
-    return null;
+    const prices = res.data.values.map(v => parseFloat(v.close));
+
+    cache = prices;
+    lastFetch = now;
+
+    console.log("API取得成功");
+
+    return prices;
+
+  } catch (e) {
+    console.log("取得失敗:", e.message);
+    return cache; // fallback
   }
 }
 
 // ===== 時間足生成 =====
 function buildTF(prices, size) {
   const chunk = prices.slice(0, size);
+
   const current = chunk[0];
-  const avg = chunk.reduce((a,b)=>a+b,0)/chunk.length;
+  const avg = chunk.reduce((a, b) => a + b, 0) / chunk.length;
 
   let trend = "レンジ";
   if (current > avg) trend = "上昇";
@@ -32,17 +59,18 @@ function buildTF(prices, size) {
   return { current, avg, trend };
 }
 
-// ===== 判断 =====
-function decide(data) {
-  const m5 = buildTF(data, 5);
-  const h1 = buildTF(data, 12);
-  const h4 = buildTF(data, 48);
+// ===== トレード判断 =====
+function decide(prices) {
+  const m5 = buildTF(prices, 5);    // 5分
+  const h1 = buildTF(prices, 12);   // 約1時間
+  const h4 = buildTF(prices, 48);   // 約4時間
 
   let direction = "様子見";
   let entry = null;
   let tp = null;
   let sl = null;
 
+  // 上位足一致のみエントリー
   if (h4.trend === "上昇" && h1.trend === "上昇") {
     if (m5.trend === "下降") {
       direction = "ロング";
@@ -64,24 +92,41 @@ function decide(data) {
   return { direction, entry, tp, sl, m5, h1, h4 };
 }
 
+// ===== LINE返信 =====
+async function reply(token, text) {
+  await axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    {
+      replyToken: token,
+      messages: [{ type: "text", text }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
 // ===== Webhook =====
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
-  const data = await getData();
+  const prices = await getData();
 
   for (let event of events) {
     if (event.type === "message") {
 
-      if (!data) {
-        await reply(event.replyToken, "データ取得失敗");
+      if (!prices) {
+        await reply(event.replyToken, "データ取得失敗（API制限中）");
         continue;
       }
 
-      const trade = decide(data);
+      const trade = decide(prices);
 
-      const msg = `
+      const message = `
 【ポジション】
 ${trade.direction}
 
@@ -102,32 +147,15 @@ ${trade.sl ? trade.sl.toFixed(2) : "-"}
 ・1時間足：${trade.h1.trend}
 ・4時間足：${trade.h4.trend}
 
-【理由】
-上位足と方向一致＋短期押し目のみエントリー
+【戦略】
+上位足（1時間・4時間）と方向一致＋短期（5分）の押し目/戻りのみエントリー
 `;
 
-      await reply(event.replyToken, msg);
+      await reply(event.replyToken, message);
     }
   }
 
   res.sendStatus(200);
 });
-
-// ===== LINE返信 =====
-async function reply(token, text) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken: token,
-      messages: [{ type: "text", text }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    }
-  );
-}
 
 app.listen(process.env.PORT || 3000);
