@@ -9,7 +9,7 @@ app.use(bodyParser.json());
 let cached = null;
 let lastFetch = 0;
 
-// ===== データ取得 =====
+// ===== Alpha =====
 async function getAlpha() {
   try {
     const res = await axios.get(
@@ -19,27 +19,52 @@ async function getAlpha() {
     const data = res.data["Time Series FX (5min)"];
     if (!data) return null;
 
-    const times = Object.keys(data).slice(0, 50);
-    const prices = times.map(t => parseFloat(data[t]["4. close"]));
+    return parseData(data);
 
-    const current = prices[0];
-    const high = Math.max(...prices);
-    const low = Math.min(...prices);
-
-    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-
-    let trend = "レンジ";
-    if (current > avg + 0.05) trend = "上昇";
-    else if (current < avg - 0.05) trend = "下降";
-
-    const range = high - low;
-    if (range < 0.15) trend = "レンジ";
-
-    return { current, high, low, trend, range, avg, isValid: true };
-
-  } catch (e) {
+  } catch {
     return null;
   }
+}
+
+// ===== Twelve Data =====
+async function getTwelve() {
+  try {
+    const res = await axios.get(
+      `https://api.twelvedata.com/time_series?symbol=USD/JPY&interval=5min&apikey=${process.env.TWELVE_API_KEY}`
+    );
+
+    if (!res.data.values) return null;
+
+    const data = {};
+    res.data.values.forEach(v => {
+      data[v.datetime] = { "4. close": v.close };
+    });
+
+    return parseData(data);
+
+  } catch {
+    return null;
+  }
+}
+
+// ===== 共通解析 =====
+function parseData(data) {
+  const times = Object.keys(data).slice(0, 50);
+  const prices = times.map(t => parseFloat(data[t]["4. close"]));
+
+  const current = prices[0];
+  const high = Math.max(...prices);
+  const low = Math.min(...prices);
+  const avg = prices.reduce((a,b)=>a+b,0)/prices.length;
+
+  let trend = "レンジ";
+  if (current > avg + 0.05) trend = "上昇";
+  else if (current < avg - 0.05) trend = "下降";
+
+  const range = high - low;
+  if (range < 0.15) trend = "レンジ";
+
+  return { current, high, low, trend, range, avg, isValid: true };
 }
 
 // ===== fallback =====
@@ -61,19 +86,28 @@ async function getFallback() {
       isValid: false
     };
 
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
-// ===== メイン取得 =====
+// ===== メイン =====
 async function getFX() {
   const now = Date.now();
 
   if (cached && now - lastFetch < 60000) return cached;
 
   let fx = await getAlpha();
-  if (!fx) fx = await getFallback();
+
+  if (!fx) {
+    console.log("Alpha失敗 → Twelve");
+    fx = await getTwelve();
+  }
+
+  if (!fx) {
+    console.log("Twelve失敗 → fallback");
+    fx = await getFallback();
+  }
 
   if (!fx && cached) return cached;
 
@@ -85,7 +119,7 @@ async function getFX() {
   return fx;
 }
 
-// ===== 売買ロジック =====
+// ===== 売買 =====
 function decideTrade(fx) {
   const { current, high, low, trend, range, isValid } = fx;
 
@@ -93,28 +127,16 @@ function decideTrade(fx) {
   let entry = null;
   let tp = null;
   let sl = null;
-  let mode = "通常";
+  let mode = isValid ? "通常" : "簡易";
 
-  // ===== 簡易モード =====
   if (!isValid) {
-    mode = "簡易";
-
-    // 超簡易判断（方向だけ出す）
-    if (Math.random() > 0.5) {
-      direction = "ややロング寄り（様子見）";
-    } else {
-      direction = "ややショート寄り（様子見）";
-    }
-
     return { direction, entry, tp, sl, mode };
   }
 
-  // ===== ブレイク回避 =====
   if (current > high || current < low) {
     return { direction, entry, tp, sl, mode };
   }
 
-  // ===== トレンド =====
   if (trend === "上昇") {
     direction = "ロング";
     entry = current - 0.02;
@@ -129,7 +151,6 @@ function decideTrade(fx) {
     sl = current + 0.2;
   }
 
-  // ===== レンジ =====
   else {
     if (range > 0.3) {
 
@@ -152,42 +173,27 @@ function decideTrade(fx) {
   return { direction, entry, tp, sl, mode };
 }
 
-// ===== 理由生成 =====
+// ===== 理由 =====
 function generateReason(fx, trade) {
-  const { current, high, low, trend, range, avg, isValid } = fx;
-
-  if (!isValid) {
-    return "現在リアルタイムデータ取得制限中のため簡易分析。方向感は弱く、明確な優位性がないため基本は様子見推奨。";
+  if (!fx.isValid) {
+    return "データ取得制限中のため簡易モード。精度低下中のため様子見推奨。";
   }
 
-  const rangeInfo = `レンジ幅：約${range.toFixed(2)}円`;
-  const avgInfo = `平均価格：約${avg.toFixed(2)}`;
+  const { current, avg, trend } = fx;
 
   if (trade.direction === "様子見") {
-    return `${rangeInfo}と小さく、トレンドも不明確なため見送り。`;
+    return "明確なエントリーポイントなし。優位性が低いため見送り。";
   }
 
   if (trend === "上昇") {
-    return `現在価格${current.toFixed(2)}は${avgInfo}より上で上昇トレンド。押し目ロング。`;
+    return `価格が平均(${avg.toFixed(2)})より上で上昇トレンド。押し目ロング。`;
   }
 
   if (trend === "下降") {
-    return `現在価格${current.toFixed(2)}は${avgInfo}より下で下降トレンド。戻り売り。`;
+    return `価格が平均(${avg.toFixed(2)})より下で下降トレンド。戻り売り。`;
   }
 
-  if (trend === "レンジ") {
-    const mid = (high + low) / 2;
-
-    if (trade.direction.includes("ショート")) {
-      return `レンジ上限（${high.toFixed(2)}）付近のためショート。利確は${mid.toFixed(2)}。`;
-    }
-
-    if (trade.direction.includes("ロング")) {
-      return `レンジ下限（${low.toFixed(2)}）付近のためロング。利確は${mid.toFixed(2)}。`;
-    }
-  }
-
-  return "相場状況から総合判断。";
+  return "レンジ相場のため反発狙い。";
 }
 
 // ===== Webhook =====
@@ -201,23 +207,6 @@ app.post("/webhook", async (req, res) => {
       const replyToken = event.replyToken;
       const fx = await getFX();
 
-      if (!fx) {
-        await axios.post(
-          "https://api.line.me/v2/bot/message/reply",
-          {
-            replyToken,
-            messages: [{ type: "text", text: "為替取得エラー" }],
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-        continue;
-      }
-
       const trade = decideTrade(fx);
 
       const message = `
@@ -227,20 +216,20 @@ ${trade.direction}
 【モード】
 ${trade.mode}
 
-【トレンド（5分足）】
+【トレンド】
 ${fx.isValid ? fx.trend : "-"}
 
 【現在】
 ${fx.current.toFixed(2)}
 
 【エントリー】
-${trade.entry !== null ? trade.entry.toFixed(2) : "-"}
+${trade.entry ? trade.entry.toFixed(2) : "-"}
 
 【利確】
-${trade.tp !== null ? trade.tp.toFixed(2) : "-"}
+${trade.tp ? trade.tp.toFixed(2) : "-"}
 
 【損切り】
-${trade.sl !== null ? trade.sl.toFixed(2) : "-"}
+${trade.sl ? trade.sl.toFixed(2) : "-"}
 
 【理由】
 ${generateReason(fx, trade)}
