@@ -5,33 +5,46 @@ const axios = require("axios");
 const app = express();
 app.use(bodyParser.json());
 
-// ===== キャッシュ =====
+// ===== キャッシュ管理 =====
 let cache = null;
 let lastFetch = 0;
+let isFetching = false;
 
-// ===== データ取得（1分キャッシュ）=====
+// 最低取得間隔（15秒）
+const MIN_INTERVAL = 15000;
+
+// ===== データ取得（制限対策フル）=====
 async function getData() {
   const now = Date.now();
 
-  // 60秒以内はキャッシュ使用
-  if (cache && now - lastFetch < 60000) {
+  // ① キャッシュ利用
+  if (cache && now - lastFetch < MIN_INTERVAL) {
     console.log("キャッシュ使用");
     return cache;
   }
+
+  // ② 同時実行防止
+  if (isFetching) {
+    console.log("取得中のためキャッシュ返却");
+    return cache;
+  }
+
+  isFetching = true;
 
   try {
     const res = await axios.get(
       `https://api.twelvedata.com/time_series?symbol=USD/JPY&interval=5min&outputsize=60&apikey=${process.env.TWELVE_API_KEY}`
     );
 
-    // エラーチェック
+    // ③ エラーチェック
     if (!res.data.values) {
       console.log("APIエラー:", res.data);
-      return cache; // 前回データ使う
+      return cache;
     }
 
     const prices = res.data.values.map(v => parseFloat(v.close));
 
+    // ④ キャッシュ更新
     cache = prices;
     lastFetch = now;
 
@@ -41,7 +54,9 @@ async function getData() {
 
   } catch (e) {
     console.log("取得失敗:", e.message);
-    return cache; // fallback
+    return cache;
+  } finally {
+    isFetching = false;
   }
 }
 
@@ -61,9 +76,9 @@ function buildTF(prices, size) {
 
 // ===== トレード判断 =====
 function decide(prices) {
-  const m5 = buildTF(prices, 5);    // 5分
-  const h1 = buildTF(prices, 12);   // 約1時間
-  const h4 = buildTF(prices, 48);   // 約4時間
+  const m5 = buildTF(prices, 5);
+  const h1 = buildTF(prices, 12);
+  const h4 = buildTF(prices, 48);
 
   let direction = "様子見";
   let entry = null;
@@ -114,13 +129,14 @@ app.post("/webhook", async (req, res) => {
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
+  // ★ここで1回だけ取得（超重要）
   const prices = await getData();
 
   for (let event of events) {
     if (event.type === "message") {
 
       if (!prices) {
-        await reply(event.replyToken, "データ取得失敗（API制限中）");
+        await reply(event.replyToken, "データ取得失敗（API制限または通信エラー）");
         continue;
       }
 
@@ -148,7 +164,7 @@ ${trade.sl ? trade.sl.toFixed(2) : "-"}
 ・4時間足：${trade.h4.trend}
 
 【戦略】
-上位足（1時間・4時間）と方向一致＋短期（5分）の押し目/戻りのみエントリー
+上位足（1時間・4時間）と方向一致＋短期押し目/戻りのみエントリー
 `;
 
       await reply(event.replyToken, message);
