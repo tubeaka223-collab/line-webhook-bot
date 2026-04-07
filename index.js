@@ -5,25 +5,24 @@ const axios = require("axios");
 const app = express();
 app.use(bodyParser.json());
 
-// ===== キャッシュ管理 =====
+// ===== キャッシュ =====
 let cache = null;
 let lastFetch = 0;
 let isFetching = false;
 
-// 最低取得間隔（15秒）
-const MIN_INTERVAL = 15000;
+const MIN_INTERVAL = 15000; // 15秒
 
-// ===== データ取得（制限対策フル）=====
+// ===== データ取得 =====
 async function getData() {
   const now = Date.now();
 
-  // ① キャッシュ利用
+  // キャッシュ使用
   if (cache && now - lastFetch < MIN_INTERVAL) {
     console.log("キャッシュ使用");
     return cache;
   }
 
-  // ② 同時実行防止
+  // 同時実行防止
   if (isFetching) {
     console.log("取得中のためキャッシュ返却");
     return cache;
@@ -32,19 +31,34 @@ async function getData() {
   isFetching = true;
 
   try {
-    const res = await axios.get(
-      `https://api.twelvedata.com/time_series?symbol=USD/JPY&interval=5min&outputsize=60&apikey=${process.env.TWELVE_API_KEY}`
-    );
+    const apiKey = process.env.TWELVE_API_KEY;
 
-    // ③ エラーチェック
+    // ★ APIキー確認
+    if (!apiKey) {
+      console.log("APIキー未設定");
+      return cache;
+    }
+
+    const url = `https://api.twelvedata.com/time_series?symbol=USD/JPY&interval=5min&outputsize=60&apikey=${apiKey}`;
+
+    const res = await axios.get(url);
+
+    console.log("APIレスポンス:", res.data);
+
+    // ===== エラー判定（ここ重要）=====
+    if (res.data.code) {
+      console.log("APIエラー:", res.data.message);
+      return cache;
+    }
+
     if (!res.data.values) {
-      console.log("APIエラー:", res.data);
+      console.log("データなし");
       return cache;
     }
 
     const prices = res.data.values.map(v => parseFloat(v.close));
 
-    // ④ キャッシュ更新
+    // キャッシュ更新
     cache = prices;
     lastFetch = now;
 
@@ -85,7 +99,7 @@ function decide(prices) {
   let tp = null;
   let sl = null;
 
-  // 上位足一致のみエントリー
+  // 上位足一致のみ
   if (h4.trend === "上昇" && h1.trend === "上昇") {
     if (m5.trend === "下降") {
       direction = "ロング";
@@ -129,14 +143,14 @@ app.post("/webhook", async (req, res) => {
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
-  // ★ここで1回だけ取得（超重要）
+  // ★ここで1回だけ取得
   const prices = await getData();
 
   for (let event of events) {
     if (event.type === "message") {
 
       if (!prices) {
-        await reply(event.replyToken, "データ取得失敗（API制限または通信エラー）");
+        await reply(event.replyToken, "データ取得失敗（APIキー・制限・通信エラー確認）");
         continue;
       }
 
@@ -163,8 +177,8 @@ ${trade.sl ? trade.sl.toFixed(2) : "-"}
 ・1時間足：${trade.h1.trend}
 ・4時間足：${trade.h4.trend}
 
-【戦略】
-上位足（1時間・4時間）と方向一致＋短期押し目/戻りのみエントリー
+【理由】
+上位足と方向一致＋短期の押し目/戻りのみエントリー
 `;
 
       await reply(event.replyToken, message);
@@ -174,4 +188,6 @@ ${trade.sl ? trade.sl.toFixed(2) : "-"}
   res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("サーバー起動");
+});
