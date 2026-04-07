@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
@@ -12,7 +14,7 @@ let isFetching = false;
 
 const MIN_INTERVAL = 15000; // 15秒
 
-// ===== データ取得 =====
+// ===== Alpha Vantage取得 =====
 async function getData() {
   const now = Date.now();
 
@@ -31,34 +33,30 @@ async function getData() {
   isFetching = true;
 
   try {
-    const apiKey = process.env.TWELVE_API_KEY;
+    const apiKey = process.env.ALPHA_API_KEY;
 
-    // ★ APIキー確認
     if (!apiKey) {
       console.log("APIキー未設定");
       return cache;
     }
 
-    const url = `https://api.twelvedata.com/time_series?symbol=USD/JPY&interval=5min&outputsize=60&apikey=${apiKey}`;
+    const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${apiKey}`;
 
     const res = await axios.get(url);
 
-    console.log("APIレスポンス:", res.data);
+    console.log("Alphaレスポンス:", res.data);
 
-    // ===== エラー判定（ここ重要）=====
-    if (res.data.code) {
-      console.log("APIエラー:", res.data.message);
+    const data = res.data["Time Series FX (5min)"];
+
+    // ===== エラー判定 =====
+    if (!data) {
+      console.log("データ取得失敗（制限 or エラー）");
       return cache;
     }
 
-    if (!res.data.values) {
-      console.log("データなし");
-      return cache;
-    }
+    const times = Object.keys(data).slice(0, 60);
+    const prices = times.map(t => parseFloat(data[t]["4. close"]));
 
-    const prices = res.data.values.map(v => parseFloat(v.close));
-
-    // キャッシュ更新
     cache = prices;
     lastFetch = now;
 
@@ -99,7 +97,6 @@ function decide(prices) {
   let tp = null;
   let sl = null;
 
-  // 上位足一致のみ
   if (h4.trend === "上昇" && h1.trend === "上昇") {
     if (m5.trend === "下降") {
       direction = "ロング";
@@ -123,19 +120,23 @@ function decide(prices) {
 
 // ===== LINE返信 =====
 async function reply(token, text) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken: token,
-      messages: [{ type: "text", text }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
+  try {
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      {
+        replyToken: token,
+        messages: [{ type: "text", text }]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+          "Content-Type": "application/json"
+        }
       }
-    }
-  );
+    );
+  } catch (e) {
+    console.log("返信失敗:", e.message);
+  }
 }
 
 // ===== Webhook =====
@@ -143,14 +144,24 @@ app.post("/webhook", async (req, res) => {
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
-  // ★ここで1回だけ取得
+  // ★まず即レス（Render対策）
+  for (let event of events) {
+    if (event.type === "message") {
+      await reply(event.replyToken, "取得中…少し待ってください");
+    }
+  }
+
   const prices = await getData();
 
   for (let event of events) {
     if (event.type === "message") {
 
+      // データ取得できない場合
       if (!prices) {
-        await reply(event.replyToken, "データ取得失敗（APIキー・制限・通信エラー確認）");
+        await reply(
+          event.replyToken,
+          "現在データ取得が不安定です。\n少し間をおいてもう一度送信してください。"
+        );
         continue;
       }
 
@@ -163,22 +174,22 @@ ${trade.direction}
 【現在】
 ${trade.m5.current.toFixed(2)}
 
-【エントリー】
+【エントリー目安】
 ${trade.entry ? trade.entry.toFixed(2) : "-"}
 
-【利確】
+【利確目安】
 ${trade.tp ? trade.tp.toFixed(2) : "-"}
 
-【損切り】
+【損切り目安】
 ${trade.sl ? trade.sl.toFixed(2) : "-"}
 
 【相場状況】
-・5分足：${trade.m5.trend}
-・1時間足：${trade.h1.trend}
-・4時間足：${trade.h4.trend}
+・短期：${trade.m5.trend}
+・中期：${trade.h1.trend}
+・長期：${trade.h4.trend}
 
-【理由】
-上位足と方向一致＋短期の押し目/戻りのみエントリー
+【戦略】
+上位足と方向一致＋短期の押し目/戻りのみ狙う
 `;
 
       await reply(event.replyToken, message);
