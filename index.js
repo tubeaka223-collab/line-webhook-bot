@@ -1,5 +1,3 @@
-require("dotenv").config();
-
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
@@ -14,28 +12,41 @@ let isFetching = false;
 
 const MIN_INTERVAL = 15000;
 
-// ===== Alpha取得 =====
+// ===== データ取得（Alpha）=====
 async function getData() {
   const now = Date.now();
 
+  // キャッシュ
   if (cache && now - lastFetch < MIN_INTERVAL) {
+    console.log("キャッシュ使用");
     return cache;
   }
 
+  // 同時実行防止
   if (isFetching) return cache;
 
   isFetching = true;
 
   try {
-    const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${process.env.ALPHA_API_KEY}`;
+    const apiKey = process.env.ALPHA_API_KEY;
+
+    console.log("APIキー確認:", apiKey);
+
+    if (!apiKey) {
+      console.log("APIキー未設定");
+      return cache;
+    }
+
+    const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${apiKey}`;
 
     const res = await axios.get(url);
 
+    console.log("Alphaレスポンス:", res.data);
+
     const data = res.data["Time Series FX (5min)"];
 
-    // ===== エラー時 =====
     if (!data) {
-      console.log("Alphaエラー:", res.data);
+      console.log("データ取得失敗（制限 or エラー）");
       return cache;
     }
 
@@ -44,6 +55,8 @@ async function getData() {
 
     cache = prices;
     lastFetch = now;
+
+    console.log("API取得成功");
 
     return prices;
 
@@ -68,7 +81,7 @@ function buildTF(prices, size) {
   return { current, avg, trend };
 }
 
-// ===== 判断 =====
+// ===== トレード判断 =====
 function decide(prices) {
   const m5 = buildTF(prices, 5);
   const h1 = buildTF(prices, 12);
@@ -96,38 +109,46 @@ function decide(prices) {
   return { direction, entry, tp, sl, m5, h1, h4 };
 }
 
-// ===== PUSH送信（重要）=====
+// ===== LINE PUSH =====
 async function push(userId, text) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/push",
-    {
-      to: userId,
-      messages: [{ type: "text", text }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
+  try {
+    await axios.post(
+      "https://api.line.me/v2/bot/message/push",
+      {
+        to: userId,
+        messages: [{ type: "text", text }]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+          "Content-Type": "application/json"
+        }
       }
-    }
-  );
+    );
+  } catch (e) {
+    console.log("PUSH失敗:", e.message);
+  }
 }
 
-// ===== reply（即レス用）=====
+// ===== LINE reply =====
 async function reply(token, text) {
-  await axios.post(
-    "https://api.line.me/v2/bot/message/reply",
-    {
-      replyToken: token,
-      messages: [{ type: "text", text }]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
+  try {
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      {
+        replyToken: token,
+        messages: [{ type: "text", text }]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+          "Content-Type": "application/json"
+        }
       }
-    }
-  );
+    );
+  } catch (e) {
+    console.log("Reply失敗:", e.message);
+  }
 }
 
 // ===== Webhook =====
@@ -140,22 +161,22 @@ app.post("/webhook", async (req, res) => {
 
       const userId = event.source.userId;
 
-      // ① 即レス（絶対返す）
+      // 即レス
       await reply(event.replyToken, "分析中…数秒待ってください");
 
-      // ② 非同期で分析
+      // 非同期処理
       setTimeout(async () => {
 
         const prices = await getData();
 
         if (!prices) {
-          await push(userId, "現在データ取得に失敗しています。30秒後に再度お試しください。");
+          await push(userId, "データ取得失敗。30秒後に再度送信してください。");
           return;
         }
 
         const trade = decide(prices);
 
-        const msg = `
+        const message = `
 【ポジション】
 ${trade.direction}
 
@@ -180,7 +201,7 @@ ${trade.sl ? trade.sl.toFixed(2) : "-"}
 上位足一致＋短期逆行の押し目/戻りのみ狙う
 `;
 
-        await push(userId, msg);
+        await push(userId, message);
 
       }, 2000);
     }
@@ -189,4 +210,7 @@ ${trade.sl ? trade.sl.toFixed(2) : "-"}
   res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000);
+// ===== 起動 =====
+app.listen(process.env.PORT || 3000, () => {
+  console.log("サーバー起動");
+});
