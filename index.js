@@ -12,45 +12,30 @@ let cache = null;
 let lastFetch = 0;
 let isFetching = false;
 
-const MIN_INTERVAL = 15000; // 15秒
+const MIN_INTERVAL = 15000;
 
-// ===== Alpha Vantage取得 =====
+// ===== Alpha取得 =====
 async function getData() {
   const now = Date.now();
 
-  // キャッシュ使用
   if (cache && now - lastFetch < MIN_INTERVAL) {
-    console.log("キャッシュ使用");
     return cache;
   }
 
-  // 同時実行防止
-  if (isFetching) {
-    console.log("取得中のためキャッシュ返却");
-    return cache;
-  }
+  if (isFetching) return cache;
 
   isFetching = true;
 
   try {
-    const apiKey = process.env.ALPHA_API_KEY;
-
-    if (!apiKey) {
-      console.log("APIキー未設定");
-      return cache;
-    }
-
-    const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${apiKey}`;
+    const url = `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=USD&to_symbol=JPY&interval=5min&apikey=${process.env.ALPHA_API_KEY}`;
 
     const res = await axios.get(url);
 
-    console.log("Alphaレスポンス:", res.data);
-
     const data = res.data["Time Series FX (5min)"];
 
-    // ===== エラー判定 =====
+    // ===== エラー時 =====
     if (!data) {
-      console.log("データ取得失敗（制限 or エラー）");
+      console.log("Alphaエラー:", res.data);
       return cache;
     }
 
@@ -59,8 +44,6 @@ async function getData() {
 
     cache = prices;
     lastFetch = now;
-
-    console.log("API取得成功");
 
     return prices;
 
@@ -72,12 +55,11 @@ async function getData() {
   }
 }
 
-// ===== 時間足生成 =====
+// ===== 時間足 =====
 function buildTF(prices, size) {
   const chunk = prices.slice(0, size);
-
   const current = chunk[0];
-  const avg = chunk.reduce((a, b) => a + b, 0) / chunk.length;
+  const avg = chunk.reduce((a,b)=>a+b,0)/chunk.length;
 
   let trend = "レンジ";
   if (current > avg) trend = "上昇";
@@ -86,7 +68,7 @@ function buildTF(prices, size) {
   return { current, avg, trend };
 }
 
-// ===== トレード判断 =====
+// ===== 判断 =====
 function decide(prices) {
   const m5 = buildTF(prices, 5);
   const h1 = buildTF(prices, 12);
@@ -97,46 +79,55 @@ function decide(prices) {
   let tp = null;
   let sl = null;
 
-  if (h4.trend === "上昇" && h1.trend === "上昇") {
-    if (m5.trend === "下降") {
-      direction = "ロング";
-      entry = m5.current;
-      tp = entry + 0.4;
-      sl = entry - 0.2;
-    }
+  if (h4.trend === "上昇" && h1.trend === "上昇" && m5.trend === "下降") {
+    direction = "ロング";
+    entry = m5.current;
+    tp = entry + 0.4;
+    sl = entry - 0.2;
   }
 
-  else if (h4.trend === "下降" && h1.trend === "下降") {
-    if (m5.trend === "上昇") {
-      direction = "ショート";
-      entry = m5.current;
-      tp = entry - 0.4;
-      sl = entry + 0.2;
-    }
+  else if (h4.trend === "下降" && h1.trend === "下降" && m5.trend === "上昇") {
+    direction = "ショート";
+    entry = m5.current;
+    tp = entry - 0.4;
+    sl = entry + 0.2;
   }
 
   return { direction, entry, tp, sl, m5, h1, h4 };
 }
 
-// ===== LINE返信 =====
-async function reply(token, text) {
-  try {
-    await axios.post(
-      "https://api.line.me/v2/bot/message/reply",
-      {
-        replyToken: token,
-        messages: [{ type: "text", text }]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
-          "Content-Type": "application/json"
-        }
+// ===== PUSH送信（重要）=====
+async function push(userId, text) {
+  await axios.post(
+    "https://api.line.me/v2/bot/message/push",
+    {
+      to: userId,
+      messages: [{ type: "text", text }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
       }
-    );
-  } catch (e) {
-    console.log("返信失敗:", e.message);
-  }
+    }
+  );
+}
+
+// ===== reply（即レス用）=====
+async function reply(token, text) {
+  await axios.post(
+    "https://api.line.me/v2/bot/message/reply",
+    {
+      replyToken: token,
+      messages: [{ type: "text", text }]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
 }
 
 // ===== Webhook =====
@@ -144,61 +135,58 @@ app.post("/webhook", async (req, res) => {
   const events = req.body.events;
   if (!events) return res.sendStatus(200);
 
-  // ★まず即レス（Render対策）
-  for (let event of events) {
-    if (event.type === "message") {
-      await reply(event.replyToken, "取得中…少し待ってください");
-    }
-  }
-
-  const prices = await getData();
-
   for (let event of events) {
     if (event.type === "message") {
 
-      // データ取得できない場合
-      if (!prices) {
-        await reply(
-          event.replyToken,
-          "現在データ取得が不安定です。\n少し間をおいてもう一度送信してください。"
-        );
-        continue;
-      }
+      const userId = event.source.userId;
 
-      const trade = decide(prices);
+      // ① 即レス（絶対返す）
+      await reply(event.replyToken, "分析中…数秒待ってください");
 
-      const message = `
+      // ② 非同期で分析
+      setTimeout(async () => {
+
+        const prices = await getData();
+
+        if (!prices) {
+          await push(userId, "現在データ取得に失敗しています。30秒後に再度お試しください。");
+          return;
+        }
+
+        const trade = decide(prices);
+
+        const msg = `
 【ポジション】
 ${trade.direction}
 
 【現在】
 ${trade.m5.current.toFixed(2)}
 
-【エントリー目安】
+【エントリー】
 ${trade.entry ? trade.entry.toFixed(2) : "-"}
 
-【利確目安】
+【利確】
 ${trade.tp ? trade.tp.toFixed(2) : "-"}
 
-【損切り目安】
+【損切り】
 ${trade.sl ? trade.sl.toFixed(2) : "-"}
 
 【相場状況】
-・短期：${trade.m5.trend}
-・中期：${trade.h1.trend}
-・長期：${trade.h4.trend}
+・5分足：${trade.m5.trend}
+・1時間足：${trade.h1.trend}
+・4時間足：${trade.h4.trend}
 
-【戦略】
-上位足と方向一致＋短期の押し目/戻りのみ狙う
+【理由】
+上位足一致＋短期逆行の押し目/戻りのみ狙う
 `;
 
-      await reply(event.replyToken, message);
+        await push(userId, msg);
+
+      }, 2000);
     }
   }
 
   res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("サーバー起動");
-});
+app.listen(process.env.PORT || 3000);
