@@ -16,13 +16,11 @@ const MIN_INTERVAL = 15000;
 async function getData() {
   const now = Date.now();
 
-  // キャッシュ
   if (cache && now - lastFetch < MIN_INTERVAL) {
     console.log("キャッシュ使用");
     return cache;
   }
 
-  // 同時実行防止
   if (isFetching) return cache;
 
   isFetching = true;
@@ -43,10 +41,21 @@ async function getData() {
 
     console.log("Alphaレスポンス:", res.data);
 
+    // ===== ★制限・エラー検知 =====
+    if (res.data.Note || res.data.Information) {
+      console.log("API制限ヒット");
+      return cache;
+    }
+
+    if (res.data["Error Message"]) {
+      console.log("APIキーエラー");
+      return cache;
+    }
+
     const data = res.data["Time Series FX (5min)"];
 
     if (!data) {
-      console.log("データ取得失敗（制限 or エラー）");
+      console.log("データなし");
       return cache;
     }
 
@@ -170,7 +179,7 @@ app.post("/webhook", async (req, res) => {
         const prices = await getData();
 
         if (!prices) {
-          await push(userId, "データ取得失敗。30秒後に再度送信してください。");
+          await push(userId, "現在データ取得が不安定です。1分後に再度お試しください。");
           return;
         }
 
